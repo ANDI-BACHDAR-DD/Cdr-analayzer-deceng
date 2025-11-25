@@ -1,13 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Upload, FileSpreadsheet, TrendingUp, MapPin, Activity } from 'lucide-react';
+import { Upload, FileSpreadsheet, TrendingUp, MapPin, Activity, Share2, MessageCircle } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
+import { API } from "../api/config";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+
+//const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+//const API = `${BACKEND_URL}/api`;
 
 const HomePage = () => {
   const [uploads, setUploads] = useState([]);
@@ -50,7 +52,7 @@ const HomePage = () => {
       if (response.data.success) {
         toast.success(`File berhasil diupload! ${response.data.total_records} records ditemukan`);
         fetchUploads();
-        
+
         // Navigate to visualization page
         setTimeout(() => {
           navigate(`/visualization/${response.data.upload_id}`);
@@ -213,14 +215,14 @@ const HomePage = () => {
                 description: 'Tampilkan trajectory pergerakan di peta interaktif dengan Leaflet/OpenStreetMap'
               },
               {
-                icon: TrendingUp,
-                title: 'Analisis AI',
-                description: 'Ekstraksi pola pergerakan dan prediksi trajectory menggunakan GPT-5'
+                icon: Share2,
+                title: 'Analisis SNA',
+                description: 'Analisis jaringan sosial dari data CDR untuk menemukan hubungan antar pengguna'
               },
               {
-                icon: Activity,
-                title: 'Interpolasi Data',
-                description: 'Isi otomatis data GPS yang hilang dengan algoritma interpolasi cerdas'
+                icon: MessageCircle,
+                title: 'Analisis Cerdas (AI Chat)',
+                description: 'Tanya jawab interaktif dengan AI mengenai data CDR dan pola pergerakan'
               }
             ].map((feature, index) => (
               <Card key={index} className="glass-card text-center">
@@ -243,3 +245,4 @@ const HomePage = () => {
 };
 
 export default HomePage;
+

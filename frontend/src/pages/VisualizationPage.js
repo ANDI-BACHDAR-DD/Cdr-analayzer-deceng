@@ -1,8 +1,9 @@
+// src/pages/VisualizationPage.js
 import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { useParams, useNavigate } from 'react-router-dom';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, Circle } from 'react-leaflet';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import { ArrowLeft, Brain, Loader2, MapPin, Activity, Clock, Radio, User } from 'lucide-react';
@@ -10,11 +11,13 @@ import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { toast } from 'sonner';
+import { API } from "../api/config";
+import { Phone, MessageCircle, Globe, HelpCircle } from "lucide-react";
+import SNAAnalysis from "../components/ui/SNAAnalysis";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
 
-// Fix Leaflet default marker icon
+
+// Fix Leaflet default marker icon (CDN fallback)
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
@@ -33,28 +36,196 @@ const VisualizationPage = () => {
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
   const [selectedRecord, setSelectedRecord] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [inputMessage, setInputMessage] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+
+
+
 
   useEffect(() => {
     fetchData();
+
   }, [uploadId]);
+
+  // === AI Chat Handler ===
+  const handleSendMessage = async () => {
+    if (!inputMessage.trim()) return;
+
+    const userMsg = { sender: "user", text: inputMessage };
+    setMessages(prev => [...prev, userMsg]);
+    setInputMessage("");
+    setChatLoading(true);
+
+    try {
+      const resp = await axios.post(`${API}/ask_chat`, {
+        upload_id: uploadId,
+        question: userMsg.text
+      });
+
+      let answer = resp.data.answer;
+
+      // Jika answer berupa string, coba parse JSON
+      if (typeof answer === "string") {
+        try {
+          answer = JSON.parse(answer);
+        } catch (e) { }
+      }
+
+      let botText = "";
+
+      // ======== SNA ========
+      if (answer.type === "sna") {
+        const top = answer.top_contacts || [];
+        const stats = answer.sna_stats || {};
+        botText =
+          `🔗 *Analisis Social Network*\n\n` +
+          `Top Kontak:\n` +
+          (top.length > 0 ? top.map(c => `- ${c[0]}: ${c[1]}x`).join("\n") : "- Tidak ada data kontak") +
+          `\n\nStatistik:\n` +
+          `• Degree: ${stats.nodes > 0 ? "OK" : "0"}\n` +
+          `• Nodes: ${stats.nodes}\n` +
+          `• Edges: ${stats.edges}`;
+      }
+
+      // ======== SNA INTERACTION ========
+      else if (answer.type === "sna_interaction") {
+        const data = answer.data || [];
+        botText = `🔗 *Interaksi Dua Arah*\n\n` +
+          (data.length > 0 ? data.map(d => `- ${d.contact} (Weight: ${d.weight})`).join("\n") : "Tidak ditemukan interaksi dua arah yang signifikan.");
+      }
+
+      // ======== MAP / MOBILITY ========
+      else if (answer.type === "map_response") {
+        const mob = answer.mobility || {};
+        const locs = answer.locations || [];
+
+        botText = `📍 *Analisis Mobilitas*\n\n` +
+          `Total Pergerakan: ${mob.total_movements || 0}\n\n` +
+          `*Top Sites:*\n` +
+          (mob.top_sites ? mob.top_sites.map(s => `- ${s[0]} (${s[1]}x)`).join("\n") : "-") +
+          `\n\n*Hotspots (Koordinat):*\n` +
+          (locs.map(l => `- [${l.lat}, ${l.long}] (${l.count}x)`).join("\n"));
+
+        // Render Map Component inside chat
+        if (locs.length > 0) {
+          setMessages(prev => [...prev, {
+            sender: "bot",
+            text: botText,
+            isMap: true,
+            locations: locs
+          }]);
+          setChatLoading(false);
+          return;
+        }
+      }
+
+      // ======== ACTIVITY ========
+      else if (answer.type === "activity") {
+        const stats = answer.stats || {};
+        botText = `📊 *Analisis Aktivitas*\n\n` +
+          `Total: ${stats.total || 0}\n` +
+          `Peak Hour: ${stats.peak_hour !== null ? stats.peak_hour + ":00" : "-"}\n` +
+          `Peak Day: ${stats.peak_day || "-"}\n\n` +
+          `*By Type:*\n` +
+          (stats.by_type ? Object.entries(stats.by_type).map(([k, v]) => `- ${k}: ${v}`).join("\n") : "-") +
+          `\n\n*By Direction:*\n` +
+          (stats.by_direction ? Object.entries(stats.by_direction).map(([k, v]) => `- ${k}: ${v}`).join("\n") : "-");
+      }
+
+      // ======== FORENSIC ========
+      else if (answer.type === "forensic") {
+        const data = answer.data || {};
+        const susp = data.suspicious_numbers || [];
+
+        botText = `🕵‍♂ *Analisis Forensik*\n\n` +
+          `Ditemukan ${data.flagged_count || 0} indikator mencurigakan.\n\n` +
+          (susp.length > 0
+            ? susp.map(s => `⚠ ${s.number}\n  Reason: ${s.reason}\n  Count: ${s.count}`).join("\n\n")
+            : "✅ Tidak ada pola mencurigakan yang terdeteksi.");
+      }
+
+      // ======== TF-IDF MATCHES ========
+      else if (answer.type === "tfidf" || answer.type === "tfidf_matches") {
+        const matches = answer.matches || answer.samples || [];
+
+        if (matches.length > 0) {
+          botText = `📑 *Rekaman Terkait Pertanyaan*\n\n`;
+
+          matches.forEach((m, idx) => {
+            const rec = m.record || m;
+            const score = m.score ? `(Score: ${m.score.toFixed(2)})` : "";
+
+            botText += `*Result ${idx + 1}* ${score}\n`;
+            botText += `• Date/Time: ${rec.date || "N/A"} ${rec.time || ""}\n`;
+            botText += `• A-Number: ${rec.a_number || "N/A"}\n`;
+            botText += `• B-Number: ${rec.b_number || "N/A"}\n`;
+            botText += `• Activity: ${rec.calltype || "N/A"} (${rec.direction || "N/A"})\n`;
+
+            if (rec.a_sitename) botText += `• Site: ${rec.a_sitename}\n`;
+            if (rec.b_sitename) botText += `• Site B: ${rec.b_sitename}\n`;
+
+            botText += `\n`;
+          });
+        } else {
+          botText = "Maaf, tidak ditemukan rekaman yang relevan dengan pertanyaan Anda.";
+        }
+      }
+
+      // ======== FALLBACK TEKS ========
+      else {
+        botText = typeof answer === "string"
+          ? answer
+          : (answer.text || JSON.stringify(answer, null, 2));
+      }
+
+      setMessages(prev => [...prev, { sender: "bot", text: botText }]);
+    } catch (err) {
+      console.error(err);
+      setMessages(prev => [...prev, {
+        sender: "bot",
+        text: "⚠ Terjadi error saat memproses pertanyaan."
+      }]);
+    }
+
+    setChatLoading(false);
+  };
+
+
+
+
 
   const fetchData = async () => {
     setLoading(true);
     try {
-      // Fetch records
+      // records
       const recordsResponse = await axios.get(`${API}/records/${uploadId}`);
-      if (recordsResponse.data.success) {
-        setRecords(recordsResponse.data.records);
+      if (recordsResponse?.data) {
+        // Support both { records: [...] } and { success: true, records: [...] }
+        const recs = recordsResponse.data.records ?? recordsResponse.data;
+        if (Array.isArray(recs)) {
+          setRecords(recs);
+        } else {
+          setRecords([]);
+        }
+      } else {
+        setRecords([]);
       }
 
-      // Fetch statistics
+      // statistics
       const statsResponse = await axios.get(`${API}/statistics/${uploadId}`);
-      if (statsResponse.data.success) {
-        setStatistics(statsResponse.data.statistics);
+      if (statsResponse?.data) {
+        // backend may return object directly or wrapper
+        const stats = statsResponse.data.statistics ?? statsResponse.data;
+        setStatistics(stats || null);
+      } else {
+        setStatistics(null);
       }
     } catch (error) {
       console.error('Error fetching data:', error);
-      toast.error('Gagal memuat data');
+      toast.error('Gagal memuat data (cek backend / network).');
+      setRecords([]);
+      setStatistics(null);
     } finally {
       setLoading(false);
     }
@@ -67,12 +238,14 @@ const VisualizationPage = () => {
         upload_id: uploadId,
         analysis_type: 'comprehensive'
       });
-
-      if (response.data.success) {
-        setAnalysis(response.data.analysis);
-        toast.success(`Analisis selesai! ${response.data.interpolated_count} GPS points diinterpolasi`);
-        // Refresh data to get interpolated records
+      if (response?.data?.success) {
+        setAnalysis(response.data.analysis ?? response.data);
+        toast.success(`Analisis selesai!`);
+        // refresh to pick up interpolated updates
         fetchData();
+      } else {
+        // fallback: sometimes analysis returns directly
+        setAnalysis(response?.data ?? null);
       }
     } catch (error) {
       console.error('Error analyzing:', error);
@@ -82,36 +255,81 @@ const VisualizationPage = () => {
     }
   };
 
-  // Filter records with valid GPS
+
+
+  // Only use numeric coordinates
   const validGpsRecords = useMemo(() => {
-    return records.filter(r => r.a_lat && r.a_long);
+    return records.filter(r => {
+      const lat = r?.a_lat;
+      const lng = r?.a_long;
+      return lat !== null && lat !== undefined && lng !== null && lng !== undefined && !Number.isNaN(Number(lat)) && !Number.isNaN(Number(lng));
+    }).map(r => ({
+      ...r,
+      a_lat: Number(r.a_lat),
+      a_long: Number(r.a_long)
+    }));
   }, [records]);
 
-  // Calculate map center and bounds
+  // map center fallback — ensure numbers
   const mapCenter = useMemo(() => {
-    if (statistics?.gps_bounds) {
+    if (statistics?.gps_bounds && typeof statistics.gps_bounds.center_lat === 'number' && typeof statistics.gps_bounds.center_long === 'number') {
       return [statistics.gps_bounds.center_lat, statistics.gps_bounds.center_long];
     }
-    return [-6.9175, 107.6191]; // Default: Bandung
-  }, [statistics]);
+    if (validGpsRecords.length > 0) {
+      const mid = Math.floor(validGpsRecords.length / 2);
+      return [validGpsRecords[mid].a_lat, validGpsRecords[mid].a_long];
+    }
+    // default Bandung
+    return [-6.9175, 107.6191];
+  }, [statistics, validGpsRecords]);
+  // Activity → Icon mapper
+  const getActivityIcon = (type) => {
+    const t = type?.toLowerCase() || "";
 
-  // Prepare chart data
+    if (t.includes("sms")) return <MessageCircle className="w-4 h-4 inline-block" />;
+    if (t.includes("call") || t.includes("voice")) return <Phone className="w-4 h-4 inline-block" />;
+    if (t.includes("data") || t.includes("internet") || t.includes("gprs"))
+      return <Globe className="w-4 h-4 inline-block" />;
+
+    return <HelpCircle className="w-4 h-4 inline-block" />;
+  };
+  // Color mapper for trajectory line by activity
+  const getActivityColor = (type) => {
+    if (!type) return "#999"; // default gray
+
+    const t = type.toLowerCase();
+
+    if (t.includes("call")) return "#4f46e5";     // Biru
+    if (t.includes("sms")) return "#a855f7";      // Ungu
+    if (t.includes("data") || t.includes("internet")) return "#22c55e"; // Hijau
+
+    return "#999"; // fallback
+  };
+
+
+
+  // Activities & direction safe conversions
   const activityChartData = useMemo(() => {
-    if (!statistics?.activity_distribution) return [];
-    return Object.entries(statistics.activity_distribution).map(([name, value]) => ({
-      name,
-      value
-    }));
+    const dist = statistics?.activity_distribution;
+    if (!dist || typeof dist !== 'object') return [];
+    try {
+      return Object.entries(dist).map(([name, value]) => ({ name, value: Number(value) || 0 }));
+    } catch {
+      return [];
+    }
   }, [statistics]);
 
   const directionChartData = useMemo(() => {
-    if (!statistics?.direction_distribution) return [];
-    return Object.entries(statistics.direction_distribution).map(([name, value]) => ({
-      name,
-      value
-    }));
+    const dist = statistics?.direction_distribution;
+    if (!dist || typeof dist !== 'object') return [];
+    try {
+      return Object.entries(dist).map(([name, value]) => ({ name, value: Number(value) || 0 }));
+    } catch {
+      return [];
+    }
   }, [statistics]);
 
+  // Loading UI
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #e0f2f7 0%, #f5f7fa 50%, #fce4ec 100%)' }}>
@@ -172,11 +390,13 @@ const VisualizationPage = () => {
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-8">
+
         <Tabs defaultValue="map" className="space-y-6">
           <TabsList className="glass-card">
             <TabsTrigger value="map" data-testid="map-tab">Peta Trajectory</TabsTrigger>
             <TabsTrigger value="statistics" data-testid="statistics-tab">Statistik</TabsTrigger>
             <TabsTrigger value="analysis" data-testid="analysis-tab">Analisis AI</TabsTrigger>
+            <TabsTrigger value="sna" data-testid="sna-tab">Analisis SNA</TabsTrigger>
             <TabsTrigger value="data" data-testid="data-tab">Data Detail</TabsTrigger>
           </TabsList>
 
@@ -192,74 +412,161 @@ const VisualizationPage = () => {
                   Visualisasi pergerakan pengguna berdasarkan koordinat GPS dari CDR
                 </CardDescription>
               </CardHeader>
+              {/* Legend for Activity Colors */}
+              <div className="flex items-center space-x-6 mb-4 p-3 rounded-lg shadow"
+                style={{ background: 'rgba(255, 255, 255, 0.7)', backdropFilter: 'blur(10px)' }}
+              >
+                <div className="flex items-center space-x-2">
+                  <span style={{
+                    display: 'inline-block',
+                    width: '18px',
+                    height: '4px',
+                    backgroundColor: '#4f46e5',
+                    borderRadius: '2px'
+                  }}></span>
+                  <span className="text-sm font-medium">CALL</span>
+                </div>
+
+                <div className="flex items-center space-x-2">
+                  <span style={{
+                    display: 'inline-block',
+                    width: '18px',
+                    height: '4px',
+                    backgroundColor: '#a855f7',
+                    borderRadius: '2px'
+                  }}></span>
+                  <span className="text-sm font-medium">SMS</span>
+                </div>
+
+                <div className="flex items-center space-x-2">
+                  <span style={{
+                    display: 'inline-block',
+                    width: '18px',
+                    height: '4px',
+                    backgroundColor: '#22c55e',
+                    borderRadius: '2px'
+                  }}></span>
+                  <span className="text-sm font-medium">DATA</span>
+                </div>
+              </div>
+
               <CardContent>
                 <div style={{ height: '600px', borderRadius: '12px', overflow: 'hidden' }} data-testid="map-container">
-                  <MapContainer
-                    center={mapCenter}
-                    zoom={13}
-                    style={{ height: '100%', width: '100%' }}
-                  >
-                    <TileLayer
-                      attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-                      url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                    />
-                    
-                    {/* Trajectory line */}
-                    {validGpsRecords.length > 1 && (
-                      <Polyline
-                        positions={validGpsRecords.map(r => [r.a_lat, r.a_long])}
-                        color="#667eea"
-                        weight={3}
-                        opacity={0.7}
+                  {/* Only render MapContainer if center is numeric — MapContainer itself is forgiving but this avoids edgecases */}
+                  {Array.isArray(mapCenter) && mapCenter.length === 2 ? (
+                    <MapContainer
+                      center={mapCenter}
+                      zoom={13}
+                      style={{ height: '100%', width: '100%' }}
+                    >
+                      <TileLayer
+                        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                       />
-                    )}
-                    
-                    {/* Markers */}
-                    {validGpsRecords.map((record, index) => (
-                      <Marker
-                        key={record.id || index}
-                        position={[record.a_lat, record.a_long]}
-                        eventHandlers={{
-                          click: () => setSelectedRecord(record)
-                        }}
-                      >
-                        <Popup>
-                          <div className="space-y-2">
-                            <div className="font-bold text-sm" style={{ color: '#667eea' }}>
-                              Record #{index + 1}
+
+                      {/* Trajectory segmented by activity */}
+                      {validGpsRecords.length > 1 &&
+                        validGpsRecords.map((r, i) => {
+                          if (i === 0) return null; // skip first
+
+                          const prev = validGpsRecords[i - 1];
+
+                          return (
+                            <Polyline
+                              key={`seg-${i}`}
+                              positions={[
+                                [prev.a_lat, prev.a_long],
+                                [r.a_lat, r.a_long]
+                              ]}
+                              pathOptions={{
+                                color: getActivityColor(r.calltype),
+                                weight: 4,
+                                opacity: 0.9
+                              }}
+                            />
+                          );
+                        })
+                      }
+
+
+                      {/* Markers */}
+                      {validGpsRecords.map((record, index) => (
+                        <Marker
+                          key={record.id || index}
+                          position={[record.a_lat, record.a_long]}
+                          eventHandlers={{
+                            click: () => setSelectedRecord(record)
+                          }}
+                        >
+                          <Popup>
+                            <div className="space-y-2">
+                              <div
+                                className="font-bold text-sm"
+                                style={{ color: "#667eea" }}
+                              >
+                                Record #{index + 1}
+                              </div>
+
+                              <div className="text-xs space-y-1">
+
+                                <div><strong>Waktu:</strong> {record.time || "N/A"}</div>
+                                <div><strong>Latitude:</strong> {typeof record.a_lat === "number" ? record.a_lat.toFixed(6) : "N/A"}</div>
+                                <div><strong>Longitude:</strong> {typeof record.a_long === "number" ? record.a_long.toFixed(6) : "N/A"}</div>
+
+                                <div className="border-t my-1"></div>
+
+                                <div><strong>IMEI:</strong> {record.a_imei || "N/A"}</div>
+                                <div><strong>IMEI Type:</strong> {record.a_imei_type || "N/A"}</div>
+                                <div><strong>IMSI:</strong> {record.a_imsi || "N/A"}</div>
+
+                                <div className="border-t my-1"></div>
+
+                                <div><strong>LAC/CID:</strong> {record.a_lac_cid || "N/A"}</div>
+                                <div><strong>Site Name:</strong> {record.a_sitename || "N/A"}</div>
+
+                                <div className="border-t my-1"></div>
+
+                                <div><strong>User:</strong> {record.b_number || "N/A"}</div>
+
+                                {/* Dengan Icon */}
+                                <div>
+                                  <strong>Activity:</strong> {getActivityIcon(record.calltype)} {record.calltype || "N/A"}
+                                </div>
+
+                                {record.interpolated && (
+                                  <div className="text-orange-600">
+                                    <strong>⚠ GPS Diinterpolasi</strong>
+                                  </div>
+                                )}
+                              </div>
                             </div>
-                            <div className="text-xs space-y-1">
-                              <div><strong>Waktu:</strong> {record.time || 'N/A'}</div>
-                              <div><strong>Latitude:</strong> {record.a_lat?.toFixed(6)}</div>
-                              <div><strong>Longitude:</strong> {record.a_long?.toFixed(6)}</div>
-                              <div><strong>Cell Tower:</strong> {record.a_lac_cid || 'N/A'}</div>
-                              <div><strong>User:</strong> {record.b_number || 'N/A'}</div>
-                              <div><strong>Activity:</strong> {record.calltype || 'N/A'}</div>
-                              {record.interpolated && (
-                                <div className="text-orange-600"><strong>⚠ GPS Diinterpolasi</strong></div>
-                              )}
-                            </div>
-                          </div>
-                        </Popup>
-                      </Marker>
-                    ))}
-                    
-                    {/* Start and End markers with different colors */}
-                    {validGpsRecords.length > 0 && (
-                      <>
-                        <Circle
-                          center={[validGpsRecords[0].a_lat, validGpsRecords[0].a_long]}
-                          radius={100}
-                          pathOptions={{ color: '#43e97b', fillColor: '#43e97b', fillOpacity: 0.5 }}
-                        />
-                        <Circle
-                          center={[validGpsRecords[validGpsRecords.length - 1].a_lat, validGpsRecords[validGpsRecords.length - 1].a_long]}
-                          radius={100}
-                          pathOptions={{ color: '#fa709a', fillColor: '#fa709a', fillOpacity: 0.5 }}
-                        />
-                      </>
-                    )}
-                  </MapContainer>
+                          </Popup>
+
+
+                        </Marker>
+                      ))}
+
+                      {/* Start and End markers with different colors */}
+                      {validGpsRecords.length > 0 && (
+                        <>
+                          <Circle
+                            center={[validGpsRecords[0].a_lat, validGpsRecords[0].a_long]}
+                            radius={100}
+                            pathOptions={{ color: '#43e97b', fillColor: '#43e97b', fillOpacity: 0.5 }}
+                          />
+                          <Circle
+                            center={[validGpsRecords[validGpsRecords.length - 1].a_lat, validGpsRecords[validGpsRecords.length - 1].a_long]}
+                            radius={100}
+                            pathOptions={{ color: '#fa709a', fillColor: '#fa709a', fillOpacity: 0.5 }}
+                          />
+                        </>
+                      )}
+                    </MapContainer>
+                  ) : (
+                    <div className="h-full flex items-center justify-center text-gray-500">
+                      Tidak ada koordinat peta yang valid.
+                    </div>
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -284,14 +591,14 @@ const VisualizationPage = () => {
                         <MapPin className="w-3 h-3" />
                         <span>Latitude</span>
                       </div>
-                      <div className="font-semibold">{selectedRecord.a_lat?.toFixed(6) || 'N/A'}</div>
+                      <div className="font-semibold">{typeof selectedRecord.a_lat === 'number' ? selectedRecord.a_lat.toFixed(6) : 'N/A'}</div>
                     </div>
                     <div className="space-y-1">
                       <div className="text-xs text-gray-500 flex items-center space-x-1">
                         <MapPin className="w-3 h-3" />
                         <span>Longitude</span>
                       </div>
-                      <div className="font-semibold">{selectedRecord.a_long?.toFixed(6) || 'N/A'}</div>
+                      <div className="font-semibold">{typeof selectedRecord.a_long === 'number' ? selectedRecord.a_long.toFixed(6) : 'N/A'}</div>
                     </div>
                     <div className="space-y-1">
                       <div className="text-xs text-gray-500 flex items-center space-x-1">
@@ -338,7 +645,7 @@ const VisualizationPage = () => {
                 </CardHeader>
                 <CardContent>
                   <div className="text-3xl font-bold" style={{ color: '#667eea' }}>
-                    {statistics?.total_records || 0}
+                    {typeof statistics?.total_records === 'number' ? statistics.total_records : (records.length || 0)}
                   </div>
                 </CardContent>
               </Card>
@@ -348,7 +655,7 @@ const VisualizationPage = () => {
                 </CardHeader>
                 <CardContent>
                   <div className="text-3xl font-bold" style={{ color: '#43e97b' }}>
-                    {statistics?.records_with_gps || 0}
+                    {typeof statistics?.records_with_gps === 'number' ? statistics.records_with_gps : validGpsRecords.length}
                   </div>
                 </CardContent>
               </Card>
@@ -358,7 +665,7 @@ const VisualizationPage = () => {
                 </CardHeader>
                 <CardContent>
                   <div className="text-3xl font-bold" style={{ color: '#fa709a' }}>
-                    {statistics?.missing_gps || 0}
+                    {typeof statistics?.missing_gps === 'number' ? statistics.missing_gps : Math.max(0, (records.length || 0) - validGpsRecords.length)}
                   </div>
                 </CardContent>
               </Card>
@@ -368,7 +675,9 @@ const VisualizationPage = () => {
                 </CardHeader>
                 <CardContent>
                   <div className="text-3xl font-bold" style={{ color: '#f093fb' }}>
-                    {statistics?.missing_gps_percentage || 0}%
+                    {typeof statistics?.missing_gps_percentage === 'number' ? statistics.missing_gps_percentage : (
+                      records.length > 0 ? Math.round(((records.length - validGpsRecords.length) / records.length) * 100 * 100) / 100 : 0
+                    )}%
                   </div>
                 </CardContent>
               </Card>
@@ -382,15 +691,19 @@ const VisualizationPage = () => {
                   <CardTitle>Distribusi Tipe Aktivitas</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <ResponsiveContainer width="100%" height={300}>
-                    <BarChart data={activityChartData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
-                      <XAxis dataKey="name" />
-                      <YAxis />
-                      <Tooltip />
-                      <Bar dataKey="value" fill="#667eea" radius={[8, 8, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
+                  {Array.isArray(activityChartData) && activityChartData.length > 0 ? (
+                    <ResponsiveContainer width="100%" height={300}>
+                      <BarChart data={activityChartData}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
+                        <XAxis dataKey="name" />
+                        <YAxis />
+                        <Tooltip />
+                        <Bar dataKey="value" fill="#667eea" radius={[8, 8, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="py-8 text-center text-gray-500">Tidak ada data aktivitas untuk ditampilkan.</div>
+                  )}
                 </CardContent>
               </Card>
 
@@ -400,25 +713,28 @@ const VisualizationPage = () => {
                   <CardTitle>Distribusi Arah Komunikasi</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <ResponsiveContainer width="100%" height={300}>
-                    <PieChart>
-                      <Pie
-                        data={directionChartData}
-                        cx="50%"
-                        cy="50%"
-                        labelLine={false}
-                        label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
-                        outerRadius={100}
-                        fill="#8884d8"
-                        dataKey="value"
-                      >
-                        {directionChartData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                        ))}
-                      </Pie>
-                      <Tooltip />
-                    </PieChart>
-                  </ResponsiveContainer>
+                  {Array.isArray(directionChartData) && directionChartData.length > 0 ? (
+                    <ResponsiveContainer width="100%" height={300}>
+                      <PieChart>
+                        <Pie
+                          data={directionChartData}
+                          cx="50%"
+                          cy="50%"
+                          labelLine={false}
+                          label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                          outerRadius={100}
+                          dataKey="value"
+                        >
+                          {directionChartData.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                          ))}
+                        </Pie>
+                        <Tooltip />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="py-8 text-center text-gray-500">Tidak ada data arah untuk ditampilkan.</div>
+                  )}
                 </CardContent>
               </Card>
             </div>
@@ -426,60 +742,93 @@ const VisualizationPage = () => {
 
           {/* Analysis Tab */}
           <TabsContent value="analysis" className="space-y-6">
-            {!analysis ? (
-              <Card className="glass-card">
-                <CardContent className="py-16">
-                  <div className="text-center space-y-4">
-                    <Brain className="w-16 h-16 mx-auto" style={{ color: '#667eea' }} />
-                    <h3 className="text-xl font-bold">Belum Ada Analisis AI</h3>
-                    <p className="text-gray-600">Klik tombol "Analisis dengan AI" untuk memulai analisis trajectory dengan GPT-5</p>
-                    <Button
-                      data-testid="analyze-button-tab"
-                      onClick={handleAnalyze}
-                      disabled={analyzing}
-                      className="mt-4"
-                      style={{
-                        background: analyzing ? '#9ca3af' : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-                        color: 'white',
-                        border: 'none'
-                      }}
-                    >
-                      {analyzing ? 'Menganalisis...' : 'Mulai Analisis'}
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            ) : (
-              <div className="space-y-6">
-                <Card className="glass-card">
-                  <CardHeader>
-                    <CardTitle className="flex items-center space-x-2">
-                      <Brain className="w-5 h-5" style={{ color: '#667eea' }} />
-                      <span>Hasil Analisis AI (GPT-5)</span>
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-6">
-                      {Object.entries(analysis).map(([key, value]) => (
-                        <div key={key} className="space-y-2">
-                          <h4 className="font-semibold text-lg capitalize" style={{ color: '#667eea' }}>
-                            {key.replace(/_/g, ' ')}
-                          </h4>
-                          <div className="p-4 rounded-lg" style={{ background: 'rgba(102, 126, 234, 0.05)' }}>
-                            {typeof value === 'object' ? (
-                              <pre className="text-sm whitespace-pre-wrap">{JSON.stringify(value, null, 2)}</pre>
-                            ) : (
-                              <p className="text-sm text-gray-700">{value}</p>
-                            )}
-                          </div>
+            <Card className="glass-card">
+              <CardHeader>
+                <CardTitle className="text-lg font-bold" style={{ color: "#667eea" }}>
+                  🔍 Analisis Cerdas (AI Chat)
+                </CardTitle>
+                <CardDescription>
+                  Tanyakan apa saja terkait data CDR: nomor ini telepon siapa saja, siapa yang sering berada di lokasi sama, SNA, dll.
+                </CardDescription>
+              </CardHeader>
+
+              <CardContent>
+
+                {/* CHAT BOX */}
+                <div
+                  style={{
+                    height: 300,
+                    overflowY: "auto",
+                    background: "white",
+                    borderRadius: 8,
+                    padding: 12,
+                    border: "1px solid #ddd",
+                    marginBottom: 12
+                  }}
+                >
+                  {messages.map((msg, idx) => (
+                    <div key={idx} className="mb-3">
+                      <div
+                        style={{
+                          fontWeight: msg.sender === "user" ? "bold" : "normal",
+                          color: msg.sender === "user" ? "#764ba2" : "#333"
+                        }}
+                      >
+                        {msg.sender === "user" ? "Anda:" : "AI:"}
+                      </div>
+                      <div className="text-sm whitespace-pre-wrap">{msg.text}</div>
+
+                      {/* Render Mini Map if response has map data */}
+                      {msg.isMap && msg.locations && (
+                        <div className="mt-2 h-48 w-full rounded-lg overflow-hidden border">
+                          <MapContainer
+                            center={[msg.locations[0].lat, msg.locations[0].long]}
+                            zoom={13}
+                            style={{ height: '100%', width: '100%' }}
+                          >
+                            <TileLayer
+                              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                            />
+                            {msg.locations.map((loc, i) => (
+                              <Marker key={i} position={[loc.lat, loc.long]}>
+                                <Popup>
+                                  Location #{i + 1}<br />
+                                  Count: {loc.count}
+                                </Popup>
+                              </Marker>
+                            ))}
+                          </MapContainer>
                         </div>
-                      ))}
+                      )}
                     </div>
-                  </CardContent>
-                </Card>
-              </div>
-            )}
+                  ))}
+                </div>
+
+                {/* INPUT */}
+                <div className="flex space-x-2">
+                  <input
+                    className="flex-1 p-2 rounded border"
+                    placeholder="Tanyakan sesuatu tentang data CDR..."
+                    value={inputMessage}
+                    onChange={(e) => setInputMessage(e.target.value)}
+                  />
+
+                  <Button
+                    onClick={handleSendMessage}
+                    disabled={chatLoading}
+                    style={{
+                      background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+                      color: "white"
+                    }}
+                  >
+                    {chatLoading ? "Mengirim..." : "Kirim"}
+                  </Button>
+                </div>
+
+              </CardContent>
+            </Card>
           </TabsContent>
+
 
           {/* Data Tab */}
           <TabsContent value="data" className="space-y-6">
@@ -508,8 +857,8 @@ const VisualizationPage = () => {
                         <tr key={record.id || index} className="border-b hover:bg-gray-50">
                           <td className="p-2">{index + 1}</td>
                           <td className="p-2">{record.time || 'N/A'}</td>
-                          <td className="p-2">{record.a_lat?.toFixed(6) || 'N/A'}</td>
-                          <td className="p-2">{record.a_long?.toFixed(6) || 'N/A'}</td>
+                          <td className="p-2">{typeof record.a_lat === 'number' ? record.a_lat.toFixed(6) : (record.a_lat ? Number(record.a_lat).toFixed(6) : 'N/A')}</td>
+                          <td className="p-2">{typeof record.a_long === 'number' ? record.a_long.toFixed(6) : (record.a_long ? Number(record.a_long).toFixed(6) : 'N/A')}</td>
                           <td className="p-2 text-xs">{record.a_lac_cid || 'N/A'}</td>
                           <td className="p-2 text-xs">{record.b_number || 'N/A'}</td>
                           <td className="p-2">{record.calltype || 'N/A'}</td>
@@ -527,6 +876,29 @@ const VisualizationPage = () => {
               </CardContent>
             </Card>
           </TabsContent>
+          {/* SNA TAB */}
+          <TabsContent value="sna" className="space-y-6">
+            <Card className="glass-card">
+              <CardHeader>
+                <CardTitle className="text-lg font-bold" style={{ color: "#667eea" }}>
+                  🔗 Analisis Social Network (SNA)
+                </CardTitle>
+                <CardDescription>
+                  Visualisasi hubungan antar nomor berdasarkan interaksi CDR.
+                </CardDescription>
+              </CardHeader>
+
+              <CardContent>
+                {/* ANALISIS TEKS */}
+                <SNAAnalysis uploadId={uploadId} />
+
+                {/* GRAPH SNA */}
+
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+
         </Tabs>
       </div>
     </div>
